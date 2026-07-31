@@ -529,75 +529,59 @@ function scanQoderVSCDB() {
   return sessions;
 }
 
-// ---- Qoder CLI: ~/.qoder-cli/ai-stats/*.jsonl ----
-// 注意：ai-stats 并非对话记录，而是 AI 代码修改统计（无对话文本与用户提问）。
-// 每行 = 一次对某文件的修改：{filePath, aiAddedLines, aiDeletedLines, aiModifiedContent(文件快照), lineDetails[{sessionId, scenario}]}，
-// 同一 sessionId 分散在多个文件里，按 sessionId 聚合为一个会话，消息展示为修改摘要而非把文件快照冒充 AI 回复。
-function countQoderLines(ranges) {
-  let n = 0;
-  for (const r of ranges || []) {
-    const m = String(r).match(/^(\d+)-(\d+)$/);
-    n += m ? (Number(m[2]) - Number(m[1]) + 1) : 1;
+// ---- Qoder CLI 会话解析器 (~/.qoder/projects/<flat>/<uuid>.jsonl) ----
+function parseQoderCLIMessages(file) {
+  const msgs = [];
+  let lines;
+  try { lines = fs.readFileSync(file, 'utf8').split('\n'); } catch { return msgs; }
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let d; try { d = JSON.parse(line); } catch { continue; }
+    if (d.type !== 'user' && d.type !== 'assistant') continue;
+    if (d.isSidechain) continue;
+    const m = d.message || {};
+    const text = extractText(m.content);
+    if (!text.trim()) continue;
+    let role = d.type;
+    if (role === 'user' && Array.isArray(m.content) && m.content.some(c => c && c.type === 'tool_result')) role = 'tool';
+    msgs.push({ role, text, timestamp: d.timestamp || null });
   }
-  return n;
+  return msgs;
 }
-function readQoderCLIRecords() {
-  const root = path.join(HOME, '.qoder-cli', 'ai-stats');
+
+function scanQoderCLI() {
+  const root = path.join(HOME, '.qoder', 'projects');
   if (!fs.existsSync(root)) return [];
-  const records = [];
-  for (const file of walk(root, p => p.endsWith('.jsonl'))) {
+  const files = walk(root, p => p.endsWith('.jsonl'));
+  const sessions = [];
+  for (const file of files) {
+    const base = path.basename(file, '.jsonl');
     let stat; try { stat = fs.statSync(file); } catch { continue; }
     if (stat.size === 0) continue;
-    let content; try { content = fs.readFileSync(file, 'utf8'); } catch { continue; }
-    for (const line of content.split('\n')) {
-      if (!line.trim()) continue;
-      let d; try { d = JSON.parse(line); } catch { continue; }
-      const detail = (d.lineDetails && d.lineDetails[0]) || {};
-      records.push({
-        file,
-        mtime: stat.mtime,
-        birthtime: stat.birthtime,
-        sessionId: detail.sessionId || path.basename(file, '.jsonl'),
-        scenario: detail.scenario || '',
-        filePath: d.filePath || '',
-        gitRoot: d.gitRoot || '',
-        added: countQoderLines(d.aiAddedLines),
-        deleted: countQoderLines(d.aiDeletedLines),
-      });
-    }
-  }
-  return records;
-}
-function qoderCLIMessages(records) {
-  return records.map(r => ({
-    role: 'tool',
-    text: `[代码修改${r.scenario ? '·' + r.scenario : ''}] ${r.filePath}（+${r.added} 行 / -${r.deleted} 行）`,
-    timestamp: r.mtime.toISOString(),
-  }));
-}
-function scanQoderCLI() {
-  const records = readQoderCLIRecords();
-  const grouped = {};
-  for (const r of records) (grouped[r.sessionId] = grouped[r.sessionId] || []).push(r);
-  const sessions = [];
-  for (const [sid, recs] of Object.entries(grouped)) {
-    recs.sort((a, b) => a.mtime - b.mtime);
-    const msgs = qoderCLIMessages(recs);
-    const proj = recs.map(r => r.gitRoot).find(Boolean);
-    const fileCount = new Set(recs.map(r => r.filePath)).size;
+    const msgs = parseQoderCLIMessages(file);
+    if (!msgs.length) continue;
+    const firstUser = msgs.find(m => m.role === 'user' && !isNoiseUserText(m.text)) || msgs.find(m => m.role === 'user');
+    let cwd = '';
+    try {
+      const head = fs.readFileSync(file, 'utf8').split('\n').slice(0, 30);
+      for (const l of head) {
+        try { const d = JSON.parse(l); if (d.cwd) { cwd = d.cwd; break; } } catch {}
+      }
+    } catch {}
+    const proj = cwd ? path.basename(cwd) : path.basename(path.dirname(file));
     sessions.push({
-      key: 'qoder:cli:' + sid,
+      key: 'qoder:cli:' + base,
       agent: 'qoder',
-      id: sid,
-      title: `Qoder CLI 代码修改 · ${fileCount} 个文件（本地仅存修改统计，无对话文本）`,
-      project: proj ? path.basename(proj) : 'Qoder CLI',
-      cwd: proj || '',
-      startTime: recs[0].birthtime.toISOString(),
-      endTime: recs[recs.length - 1].mtime.toISOString(),
+      id: base,
+      title: firstLine(firstUser ? firstUser.text : msgs[0].text),
+      project: proj,
+      cwd,
+      startTime: msgs[0].timestamp || stat.birthtime.toISOString(),
+      endTime: msgs[msgs.length - 1].timestamp || stat.mtime.toISOString(),
       messageCount: msgs.length,
       preview: firstLine(msgs[msgs.length - 1].text),
       flags: countFlags(msgs),
-      file: recs[recs.length - 1].file,
+      file,
     });
   }
   return sessions;
@@ -766,9 +750,7 @@ function getMessages(session) {
     }));
   }
   if (session.key.startsWith('qoder:cli:')) {
-    const recs = readQoderCLIRecords().filter(r => r.sessionId === session.id);
-    recs.sort((a, b) => a.mtime - b.mtime);
-    return qoderCLIMessages(recs);
+    return parseQoderCLIMessages(session.file);
   }
   if (session.key.startsWith('opencode:sqlite:')) {
     const res = parseOpenCodeSQLite(session.file);
