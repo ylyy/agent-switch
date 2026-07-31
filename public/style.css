@@ -13,7 +13,11 @@
   --opencode: #ff9800;
   --openclaw: #00bcd4;
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin: 0; padding: 0; box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--border) var(--bg); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 body { font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; background: var(--bg); color: var(--text); font-size: 14px; overflow: hidden; }
 .hidden { display: none !important; }
 button { cursor: pointer; }
@@ -63,11 +67,12 @@ button { cursor: pointer; }
 #btnOverview { color: var(--text); border-color: #3d4f7a; }
 
 /* ---------- 中栏 ---------- */
-#middle { background: var(--bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; }
+#middle { background: var(--bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-width: 0; height: 100vh; overflow: hidden; }
 .toolbar { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
 #searchBox { flex: 1; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; min-width: 0; }
 #searchBox:focus { outline: none; border-color: var(--accent); }
-#sortSel { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 0 6px; }
+#sortSel { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 0 8px; cursor: pointer; outline: none; }
+#sortSel option { background: var(--bg2); color: var(--text); }
 .list-header { padding: 8px 14px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
 .list-header .clear { color: var(--accent); cursor: pointer; }
 #sessionList { flex: 1; overflow-y: auto; }
