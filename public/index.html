@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Switch · 对话管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <!-- 左栏:层级导航 -->
+  <aside id="sidebar">
+    <div class="brand">⚡ Agent Switch</div>
+
+    <div class="side-section">
+      <div class="side-title">AGENT</div>
+      <div id="agentList">
+        <div class="nav-item active" data-agent=""><span class="dot dot-all"></span>全部<span class="count" id="cnt-all"></span></div>
+        <div class="nav-item" data-agent="claude"><span class="dot dot-claude"></span>Claude Code<span class="count" id="cnt-claude"></span></div>
+        <div class="nav-item" data-agent="codex"><span class="dot dot-codex"></span>Codex<span class="count" id="cnt-codex"></span></div>
+        <div class="nav-item" data-agent="gemini"><span class="dot dot-gemini"></span>Gemini<span class="count" id="cnt-gemini"></span></div>
+        <div class="nav-item" data-agent="qoder"><span class="dot dot-qoder"></span>Qoder / CLI<span class="count" id="cnt-qoder"></span></div>
+        <div class="nav-item" data-agent="opencode"><span class="dot dot-opencode"></span>OpenCode<span class="count" id="cnt-opencode"></span></div>
+        <div class="nav-item" data-agent="openclaw"><span class="dot dot-openclaw"></span>OpenClaw<span class="count" id="cnt-openclaw"></span></div>
+      </div>
+    </div>
+
+    <div class="side-section">
+      <div class="side-title">项目</div>
+      <div id="projectList"></div>
+    </div>
+
+    <div class="side-section">
+      <div class="side-title">标签
+        <button id="btnAddTag" title="新建标签">＋</button>
+      </div>
+      <div id="tagList"></div>
+      <div id="tagForm" class="hidden">
+        <input id="tagName" type="text" placeholder="标签名称" maxlength="20">
+        <div id="colorPicker"></div>
+        <div class="tag-form-actions">
+          <button id="tagSave">保存</button>
+          <button id="tagCancel">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="side-section">
+      <div class="side-title">标记规则
+        <button id="btnAddRule" title="新增规则，由 AI 按描述归类">＋</button>
+      </div>
+      <div id="ruleList"></div>
+      <div id="ruleForm" class="hidden">
+        <input id="ruleName" type="text" placeholder="规则名称（如：性能问题）" maxlength="12">
+        <input id="ruleDesc" type="text" placeholder="判定描述：什么样的消息算命中" maxlength="120">
+        <div id="ruleColorPicker"></div>
+        <div class="tag-form-actions">
+          <button id="ruleSave">保存</button>
+          <button id="ruleCancel">取消</button>
+        </div>
+        <div class="hint" style="margin-top:6px">保存后旧分析自动失效，打开会话时由 AI 按新规则重新归类</div>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <button id="btnOverview">✨ 全局总览</button>
+      <button id="btnSettings">⚙︎ API 设置</button>
+      <button id="btnRefresh">↻ 重新扫描</button>
+      <button id="btnExportGitPages">📦 导出 GitHub Pages 产物</button>
+    </div>
+  </aside>
+
+  <!-- 中栏:会话列表 / 搜索结果 -->
+  <section id="middle">
+    <div class="toolbar">
+      <input id="searchBox" type="text" placeholder="全文搜索所有对话… (Enter)">
+      <select id="sortSel">
+        <option value="time-desc">最近更新</option>
+        <option value="time-asc">最早更新</option>
+        <option value="start-desc">开始时间 ↓</option>
+        <option value="msg-desc">消息数 ↓</option>
+        <option value="title">标题 A-Z</option>
+      </select>
+    </div>
+    <div id="listHeader" class="list-header"></div>
+    <div id="sessionList"></div>
+  </section>
+
+  <!-- 右栏:对话详情 -->
+  <section id="detail">
+    <div id="detailEmpty" class="detail-empty">
+      <div class="empty-icon">💬</div>
+      <p>从左侧选择一个会话，或使用全文搜索定位对话片段</p>
+    </div>
+    <div id="detailView" class="hidden">
+      <div id="detailHead">
+        <div id="detailTitle"></div>
+        <div id="detailMeta"></div>
+        <div id="detailTags"></div>
+      </div>
+      <!-- 标记统计条:点击循环定位 -->
+      <div id="flagBar"></div>
+      <!-- AI 三层总结面板 -->
+      <div id="summaryPanel"></div>
+      <div class="msg-nav">
+        <input id="inSessionSearch" type="text" placeholder="在本会话内查找… (Enter 下一个)">
+        <span id="inSessionInfo"></span>
+      </div>
+      <div id="messages"></div>
+    </div>
+  </section>
+</div>
+
+<!-- API 设置弹窗 -->
+<div id="modalMask" class="hidden">
+  <div class="modal">
+    <div class="modal-title">总结 API 设置（OpenAI 兼容接口）</div>
+    <label>Base URL</label>
+    <input id="cfgBase" type="text" placeholder="例如 https://api.openai.com/v1 或中转地址">
+    <label>API Key <span id="cfgKeyHint" class="hint"></span></label>
+    <input id="cfgKey" type="password" placeholder="sk-...（留空则保持不变）">
+    <label>模型名称</label>
+    <input id="cfgModel" type="text" placeholder="例如 gpt-4o-mini / deepseek-chat / qwen-plus">
+    <label class="switch-row"><input id="cfgAuto" type="checkbox" checked> 打开会话时自动生成递进式总结（默认开启）</label>
+    <label class="switch-row"><input id="cfgAutoAnalyze" type="checkbox" checked> 打开会话时由 AI 自动分析标记归类（默认开启）</label>
+    <div class="modal-actions">
+      <button id="cfgCancel">取消</button>
+      <button id="cfgSave">保存</button>
+    </div>
+    <div id="cfgStatus" class="hint"></div>
+  </div>
+</div>
+
+<!-- 全局总览弹窗 (L1) -->
+<div id="overviewMask" class="hidden">
+  <div class="modal modal-wide">
+    <div class="modal-title">✨ 全局对话总览
+      <button id="ovRefresh" class="mini-btn">重新生成</button>
+      <button id="ovClose" class="mini-btn">✕</button>
+    </div>
+    <div id="overviewBody"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
