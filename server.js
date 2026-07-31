@@ -454,25 +454,33 @@ function getQoderVSCDBPath() {
 
 function parseQoderVSCDB(dbPath) {
   if (!fs.existsSync(dbPath)) return [];
-  // 方式一：尝试使用 sqlite3 命令行工具解析
+  // 方式一：sqlite3 命令行解析。注意：每个 workspace 一个 localHistory key，
+  // sqlite3 会输出多行 JSON 数组，必须逐行解析后合并（整体 JSON.parse 会失败）
   try {
     const raw = require('child_process').execSync(`sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key LIKE 'lingma.chat.localHistory.%';"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
-    if (raw && raw.trim()) {
-      const entries = JSON.parse(raw.trim());
-      return Array.isArray(entries) ? entries : [entries];
+    const entries = [];
+    for (const line of String(raw || '').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const v = JSON.parse(line);
+        if (Array.isArray(v)) entries.push(...v); else entries.push(v);
+      } catch {}
     }
+    if (entries.length) return entries;
   } catch {}
 
-  // 方式二：跨平台/无 sqlite3 时的零依赖正则抓取解析备选逻辑
+  // 方式二：跨平台/无 sqlite3 时的零依赖正则抓取。
+  // 真实记录字段顺序为 id → title → context → timestamp → sessionId，且 title 含 UTF-8 中文，
+  // 需要按此顺序匹配并把 latin1 字节串转回 UTF-8 后再 JSON.parse
   try {
     const buf = fs.readFileSync(dbPath);
     const content = buf.toString('binary');
-    const matches = content.match(/\{"id":"[^"]+","sessionId":"[^"]+".+?\}/g);
+    const matches = content.match(/\{"id":"[0-9a-f-]{36}","title":[\s\S]*?"timestamp":\d+,"sessionId":"[0-9a-f-]{36}"\}/g);
     if (matches) {
       const items = [];
       for (const m of matches) {
         try {
-          const parsed = JSON.parse(m);
+          const parsed = JSON.parse(Buffer.from(m, 'binary').toString('utf8'));
           if (parsed && (parsed.sessionId || parsed.id)) items.push(parsed);
         } catch {}
       }
@@ -521,53 +529,82 @@ function scanQoderVSCDB() {
   return sessions;
 }
 
-function scanQoderCLI() {
+// ---- Qoder CLI: ~/.qoder-cli/ai-stats/*.jsonl ----
+// 注意：ai-stats 并非对话记录，而是 AI 代码修改统计（无对话文本与用户提问）。
+// 每行 = 一次对某文件的修改：{filePath, aiAddedLines, aiDeletedLines, aiModifiedContent(文件快照), lineDetails[{sessionId, scenario}]}，
+// 同一 sessionId 分散在多个文件里，按 sessionId 聚合为一个会话，消息展示为修改摘要而非把文件快照冒充 AI 回复。
+function countQoderLines(ranges) {
+  let n = 0;
+  for (const r of ranges || []) {
+    const m = String(r).match(/^(\d+)-(\d+)$/);
+    n += m ? (Number(m[2]) - Number(m[1]) + 1) : 1;
+  }
+  return n;
+}
+function readQoderCLIRecords() {
   const root = path.join(HOME, '.qoder-cli', 'ai-stats');
   if (!fs.existsSync(root)) return [];
-  const files = walk(root, p => p.endsWith('.jsonl'));
-  const sessions = [];
-  for (const file of files) {
+  const records = [];
+  for (const file of walk(root, p => p.endsWith('.jsonl'))) {
     let stat; try { stat = fs.statSync(file); } catch { continue; }
     if (stat.size === 0) continue;
     let content; try { content = fs.readFileSync(file, 'utf8'); } catch { continue; }
-    const lines = content.split('\n').filter(Boolean);
-    const msgs = [];
-    for (const line of lines) {
-      try {
-        const d = JSON.parse(line);
-        const detail = (d.lineDetails && d.lineDetails[0]) || {};
-        const text = d.aiModifiedContent || d.userQuery || (detail.lines ? `[修改 ${detail.brand || 'qoder'}] ${detail.scenario || ''}` : '');
-        if (text) {
-          msgs.push({
-            role: 'assistant',
-            text: text.trim(),
-            timestamp: stat.mtime.toISOString(),
-          });
-        }
-      } catch {}
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      let d; try { d = JSON.parse(line); } catch { continue; }
+      const detail = (d.lineDetails && d.lineDetails[0]) || {};
+      records.push({
+        file,
+        mtime: stat.mtime,
+        birthtime: stat.birthtime,
+        sessionId: detail.sessionId || path.basename(file, '.jsonl'),
+        scenario: detail.scenario || '',
+        filePath: d.filePath || '',
+        gitRoot: d.gitRoot || '',
+        added: countQoderLines(d.aiAddedLines),
+        deleted: countQoderLines(d.aiDeletedLines),
+      });
     }
-    if (!msgs.length) continue;
-    const base = path.basename(file, '.jsonl');
+  }
+  return records;
+}
+function qoderCLIMessages(records) {
+  return records.map(r => ({
+    role: 'tool',
+    text: `[代码修改${r.scenario ? '·' + r.scenario : ''}] ${r.filePath}（+${r.added} 行 / -${r.deleted} 行）`,
+    timestamp: r.mtime.toISOString(),
+  }));
+}
+function scanQoderCLI() {
+  const records = readQoderCLIRecords();
+  const grouped = {};
+  for (const r of records) (grouped[r.sessionId] = grouped[r.sessionId] || []).push(r);
+  const sessions = [];
+  for (const [sid, recs] of Object.entries(grouped)) {
+    recs.sort((a, b) => a.mtime - b.mtime);
+    const msgs = qoderCLIMessages(recs);
+    const proj = recs.map(r => r.gitRoot).find(Boolean);
+    const fileCount = new Set(recs.map(r => r.filePath)).size;
     sessions.push({
-      key: 'qoder:cli:' + base,
+      key: 'qoder:cli:' + sid,
       agent: 'qoder',
-      id: base,
-      title: firstLine(msgs[0].text),
-      project: 'Qoder CLI',
-      cwd: '',
-      startTime: stat.birthtime.toISOString(),
-      endTime: stat.mtime.toISOString(),
+      id: sid,
+      title: `Qoder CLI 代码修改 · ${fileCount} 个文件（本地仅存修改统计，无对话文本）`,
+      project: proj ? path.basename(proj) : 'Qoder CLI',
+      cwd: proj || '',
+      startTime: recs[0].birthtime.toISOString(),
+      endTime: recs[recs.length - 1].mtime.toISOString(),
       messageCount: msgs.length,
       preview: firstLine(msgs[msgs.length - 1].text),
       flags: countFlags(msgs),
-      file,
+      file: recs[recs.length - 1].file,
     });
   }
   return sessions;
 }
 
 function scanQoder() {
-  return [...scanQoderVSCDB(), ...scanQoderCLI()];
+  return scanQoderCLI();
 }
 
 function scanGenericAgent(agentName, roots) {
@@ -604,15 +641,95 @@ function scanGenericAgent(agentName, roots) {
   return sessions;
 }
 
+// ---- OpenCode: ~/.local/share/opencode/opencode.db (SQLite) ----
+// 表结构: session(id,title,directory,time_created,time_updated) / message(id,session_id,data,time_created) / part(message_id,data)
+// message.data 含 role，part.data 含 type(text/tool/step-*)，对话正文在 type=text 的 part.text 里
+function getOpenCodeDBPath() {
+  if (process.platform === 'win32') {
+    return path.join(LOCALAPPDATA || APPDATA, 'opencode', 'opencode.db');
+  }
+  return path.join(HOME, '.local', 'share', 'opencode', 'opencode.db');
+}
+
+// 用 sqlite3 -json 输出，避免正文里的管道符/换行把默认 | 分隔格式切坏
+function openCodeQuery(dbPath, sql) {
+  try {
+    const raw = require('child_process').execSync(`sqlite3 -json "${dbPath}" "${sql}"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 });
+    return raw.trim() ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function parseOpenCodeSQLite(dbPath) {
+  const empty = { sessions: [], messagesBySession: {} };
+  if (!fs.existsSync(dbPath)) return empty;
+
+  const partRows = openCodeQuery(dbPath, 'SELECT message_id, data FROM part ORDER BY id;');
+  const partsByMsg = {};
+  for (const r of partRows) {
+    let d; try { d = JSON.parse(r.data); } catch { continue; }
+    let piece = '';
+    if (d.type === 'text' && d.text) piece = d.text;
+    else if (d.type === 'tool') piece = `[工具调用: ${(d.tool || d.name || '')}] ` + firstLine(JSON.stringify((d.state && d.state.input) || d.input || {}), 200);
+    if (piece) partsByMsg[r.message_id] = (partsByMsg[r.message_id] ? partsByMsg[r.message_id] + '\n' : '') + piece;
+  }
+
+  const msgRows = openCodeQuery(dbPath, 'SELECT id, session_id, data, time_created FROM message ORDER BY time_created, id;');
+  const messagesBySession = {};
+  for (const r of msgRows) {
+    let d; try { d = JSON.parse(r.data); } catch { continue; }
+    const text = (partsByMsg[r.id] || '').trim();
+    if (!text) continue;
+    if (!messagesBySession[r.session_id]) messagesBySession[r.session_id] = [];
+    messagesBySession[r.session_id].push({
+      role: d.role === 'user' ? 'user' : 'assistant',
+      text,
+      timestamp: r.time_created ? new Date(Number(r.time_created)).toISOString() : null,
+    });
+  }
+
+  const sessRows = openCodeQuery(dbPath, 'SELECT id, title, directory, time_created, time_updated FROM session ORDER BY time_updated DESC;');
+  const sessions = [];
+  for (const r of sessRows) {
+    const msgs = messagesBySession[r.id] || [];
+    if (!msgs.length) continue;
+    sessions.push({
+      key: 'opencode:sqlite:' + r.id,
+      agent: 'opencode',
+      id: r.id,
+      title: firstLine(r.title || msgs[0].text),
+      project: r.directory ? path.basename(r.directory) : 'OpenCode',
+      cwd: r.directory || '',
+      startTime: r.time_created ? new Date(Number(r.time_created)).toISOString() : msgs[0].timestamp,
+      endTime: r.time_updated ? new Date(Number(r.time_updated)).toISOString() : msgs[msgs.length - 1].timestamp,
+      messageCount: msgs.length,
+      preview: firstLine(msgs[msgs.length - 1].text),
+      flags: countFlags(msgs),
+      file: dbPath,
+    });
+  }
+  return { sessions, messagesBySession };
+}
+
 function scanOpenCode() {
-  return scanGenericAgent('opencode', [
+  const generic = scanGenericAgent('opencode', [
+    path.join(HOME, '.opencode'),
     path.join(HOME, '.opencode', 'sessions'),
     path.join(HOME, '.opencode', 'history'),
+    path.join(HOME, '.config', 'opencode'),
     path.join(HOME, '.config', 'opencode', 'sessions'),
+    path.join(HOME, '.local', 'share', 'opencode'),
     path.join(HOME, '.local', 'share', 'opencode', 'sessions'),
+    path.join(HOME, 'Library', 'Application Support', 'OpenCode'),
+    path.join(HOME, 'Library', 'Application Support', 'opencode'),
+    path.join(APPDATA, 'opencode'),
     path.join(APPDATA, 'opencode', 'sessions'),
+    path.join(LOCALAPPDATA, 'opencode'),
     path.join(LOCALAPPDATA, 'opencode', 'sessions'),
   ]);
+
+  const dbPath = getOpenCodeDBPath();
+  const sqliteRes = parseOpenCodeSQLite(dbPath);
+  return [...sqliteRes.sessions, ...generic];
 }
 
 // ---------------------------------------------------------------------------
@@ -640,22 +757,22 @@ function getMessages(session) {
   if (session.agent === 'gemini') return parseGeminiMessages(session.file);
   if (session.agent === 'openclaw') return parseOpenClawMessages(session.file);
   if (session.key.startsWith('qoder:vscdb:')) {
-    const vscdbSessions = scanQoderVSCDB();
-    const found = vscdbSessions.find(s => s.id === session.id);
-    if (found) {
-      try {
-        const raw = require('child_process').execSync(`sqlite3 "${session.file}" "SELECT value FROM ItemTable WHERE key LIKE 'lingma.chat.localHistory.%';"`, { encoding: 'utf8' });
-        if (raw.trim()) {
-          const entries = JSON.parse(raw.trim()).filter(e => (e.sessionId || e.id) === session.id);
-          entries.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-          return entries.map(m => ({
-            role: 'user',
-            text: m.title || '',
-            timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : null,
-          }));
-        }
-      } catch {}
-    }
+    const entries = parseQoderVSCDB(session.file).filter(e => (e.sessionId || e.id) === session.id);
+    entries.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    return entries.map(m => ({
+      role: 'user',
+      text: m.title || '',
+      timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : null,
+    }));
+  }
+  if (session.key.startsWith('qoder:cli:')) {
+    const recs = readQoderCLIRecords().filter(r => r.sessionId === session.id);
+    recs.sort((a, b) => a.mtime - b.mtime);
+    return qoderCLIMessages(recs);
+  }
+  if (session.key.startsWith('opencode:sqlite:')) {
+    const res = parseOpenCodeSQLite(session.file);
+    return res.messagesBySession[session.id] || [];
   }
   return parseGenericMessages(session.file);
 }
