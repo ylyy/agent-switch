@@ -21,8 +21,19 @@
 ### 依赖环境
 - Node.js >= 16.0.0
 
-### 启动方式
+### 方式一：npx 一条命令启动（推荐，无需 clone）
+在任意电脑上执行：
 ```bash
+npx github:ylyy/agent-switch
+```
+启动后访问 `http://localhost:4777`，看到的即是当前这台电脑本地的 Agent 会话记录。
+
+> 标签、配置、AI 总结等数据保存在 `~/.agent-switch/` 目录，不会随 npx 缓存清理而丢失。
+
+### 方式二：本地启动
+```bash
+git clone https://github.com/ylyy/agent-switch.git
+cd agent-switch
 npm start
 ```
 默认会在本地启动服务：`http://localhost:4777`

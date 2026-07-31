@@ -14,7 +14,9 @@ const HOME = os.homedir();
 const APPDATA = process.env.APPDATA || (process.platform === 'darwin' ? path.join(HOME, 'Library', 'Application Support') : path.join(HOME, 'AppData', 'Roaming'));
 const LOCALAPPDATA = process.env.LOCALAPPDATA || path.join(HOME, 'AppData', 'Local');
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4777;
-const DATA_DIR = path.join(__dirname, 'data');
+// 数据目录固定在用户主目录，保证 npx 运行（代码位于临时缓存目录）时标签/配置/总结不丢失
+const DATA_DIR = path.join(HOME, '.agent-switch');
+const LEGACY_DATA_DIR = path.join(__dirname, 'data');
 const TAGS_FILE = path.join(DATA_DIR, 'tags.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SUMMARY_FILE = path.join(DATA_DIR, 'summaries.json');
@@ -29,6 +31,18 @@ function safeReadJSON(file, fallback) {
 }
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+// 一次性迁移：把旧版仓库内 data/ 下的数据搬到 ~/.agent-switch（已存在的文件不覆盖）
+function migrateLegacyData() {
+  if (!fs.existsSync(LEGACY_DATA_DIR)) return;
+  ensureDataDir();
+  for (const name of ['tags.json', 'config.json', 'summaries.json', 'flags.json']) {
+    const src = path.join(LEGACY_DATA_DIR, name);
+    const dst = path.join(DATA_DIR, name);
+    try {
+      if (fs.existsSync(src) && !fs.existsSync(dst)) fs.copyFileSync(src, dst);
+    } catch {}
+  }
 }
 function loadTagStore() {
   // 结构: { tags: [{id,name,color}], assignments: { sessionKey: [tagId,...] } }
@@ -1039,5 +1053,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  migrateLegacyData();
   console.log(`agent-switch running at http://localhost:${PORT}`);
 });
