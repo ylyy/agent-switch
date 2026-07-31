@@ -705,8 +705,116 @@ if ($('#btnExportGitPages')) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 本地浏览器直接选择文件夹/日志文件解析 (用于 GitHub Pages 等静态部署)
+// ---------------------------------------------------------------------------
+if ($('#btnLoadLocal') && $('#localFileInput')) {
+  $('#btnLoadLocal').onclick = () => $('#localFileInput').click();
+  $('#localFileInput').onchange = async (e) => {
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
+    
+    $('#btnLoadLocal').textContent = '⏳ 解析中…';
+    try {
+      const parsedSessions = [];
+      for (const file of files) {
+        const path = file.webkitRelativePath || file.name;
+        // 匹配 json / jsonl 文件
+        if (!/\.(json|jsonl)$/i.test(path)) continue;
+        
+        try {
+          const text = await file.text();
+          let messages = [];
+          if (path.endsWith('.jsonl')) {
+            const lines = text.split('\n');
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const item = JSON.parse(line);
+                if (item.type === 'USER_INPUT' || item.type === 'PLANNER_RESPONSE' || item.role || item.content) {
+                  const role = item.role || (item.type === 'USER_INPUT' ? 'user' : 'assistant');
+                  let contentStr = '';
+                  if (typeof item.content === 'string') contentStr = item.content;
+                  else if (Array.isArray(item.content)) {
+                    contentStr = item.content.map(c => typeof c === 'string' ? c : (c.text || JSON.stringify(c))).join('\n');
+                  } else if (item.content) {
+                    contentStr = JSON.stringify(item.content);
+                  }
+                  if (contentStr) messages.push({ role, content: contentStr });
+                }
+              } catch (_) {}
+            }
+          } else {
+            const data = JSON.parse(text);
+            if (Array.isArray(data)) {
+              messages = data;
+            } else if (data.messages && Array.isArray(data.messages)) {
+              messages = data.messages;
+            }
+          }
+          
+          if (messages.length > 0) {
+            let agent = 'gemini';
+            if (/claude/i.test(path)) agent = 'claude';
+            else if (/codex/i.test(path)) agent = 'codex';
+            else if (/qoder/i.test(path)) agent = 'qoder';
+            else if (/opencode/i.test(path)) agent = 'opencode';
+            else if (/openclaw/i.test(path)) agent = 'openclaw';
+            
+            const firstUserMsg = messages.find(m => m.role === 'user' || m.type === 'USER_INPUT')?.content || file.name;
+            const title = firstUserMsg.slice(0, 60).replace(/\n/g, ' ');
+            
+            parsedSessions.push({
+              key: 'local_' + Math.random().toString(36).slice(2, 9),
+              agent,
+              project: path.split('/')[0] || 'Local Import',
+              title,
+              msgCount: messages.length,
+              mtime: file.lastModified || Date.now(),
+              messages
+            });
+          }
+        } catch (_) {}
+      }
+
+      if (parsedSessions.length > 0) {
+        state.sessions = parsedSessions;
+        window.LOCAL_SESSION_STORE = {};
+        parsedSessions.forEach(s => { window.LOCAL_SESSION_STORE[s.key] = s; });
+        renderSidebar();
+        renderRules();
+        renderList();
+        alert(`成功导入并在内存中解析了 ${parsedSessions.length} 个本地会话！`);
+      } else {
+        alert('未在所选文件夹中找到有效的 JSON/JSONL 日志会话文件。');
+      }
+    } catch (err) {
+      alert('解析本地文件出错: ' + err.message);
+    } finally {
+      $('#btnLoadLocal').textContent = '📂 选择本地日志目录/文件';
+    }
+  };
+}
+
+// 代理 openSession 方法以支持本地离线直接调取数据
+const originalOpenSession = window.openSession;
+window.openSession = async function(key) {
+  if (window.LOCAL_SESSION_STORE && window.LOCAL_SESSION_STORE[key]) {
+    const s = window.LOCAL_SESSION_STORE[key];
+    state.current = { session: s, messages: s.messages, summary: null, flagInfo: [] };
+    if ($('#sessionDetail')) $('#sessionDetail').style.display = 'block';
+    if ($('#emptyState')) $('#emptyState').style.display = 'none';
+    renderDetail();
+    return;
+  }
+  if (typeof originalOpenSession === 'function') {
+    return originalOpenSession(key);
+  }
+};
+
 // 启动：先取配置（自动总结开关依赖），再加载会话
 if (!window.STATIC_EXPORT_DATA) {
   api('/api/config').then(cfg => { state.config = cfg; }).catch(() => {});
 }
 loadSessions(false);
+
