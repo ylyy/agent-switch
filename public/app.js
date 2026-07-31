@@ -16,7 +16,87 @@ const state = {
   inSessionHits: [], inSessionIdx: -1,
   flagCursor: {},         // 统计条循环定位游标（规则 id -> 上次位置）
   analyzing: false,       // AI 标记分析进行中
+  lang: localStorage.getItem('agent_switch_lang') || 'zh'
 };
+
+const I18N = {
+  zh: {
+    btnLang: '🌐 EN',
+    btnLoadLocal: '📂 选择本地日志目录/文件',
+    agentAll: '全部',
+    sectionProject: '项目',
+    sectionTag: '标签',
+    sectionRules: '标记规则',
+    ruleHint: '新增规则，由 AI 按描述归类',
+    btnOverview: '✨ 全局总览',
+    btnSettings: '⚙︎ API 设置',
+    btnRefresh: '↻ 重新扫描',
+    btnExportPages: '📦 导出 GitHub Pages 产物',
+    searchPlaceholder: '全文搜索所有对话… (Enter)',
+    sortRecent: '最近更新',
+    sortOldest: '最早更新',
+    sortStartDesc: '开始时间 ↓',
+    sortMsgDesc: '消息数 ↓',
+    sortTitle: '标题 A-Z',
+    detailEmptyText: '从左侧选择一个会话，或使用全文搜索定位对话片段',
+    inSessionSearchPlaceholder: '在本会话内查找… (Enter 下一个)',
+    clearFilter: '清除筛选',
+    sessionsCount: '个会话',
+    tagPlaceholder: '标签名称',
+    save: '保存',
+    cancel: '取消',
+    ruleNamePlaceholder: '规则名称（如：性能问题）',
+    ruleDescPlaceholder: '判定描述：什么样的消息算命中',
+    ruleSaveHint: '保存后旧分析自动失效，打开会话时由 AI 按新规则重新归类',
+    failExec: '失败执行',
+    selfFix: '自我纠错',
+    conclusionTurn: '结论转折',
+    summaryTitle: '递进式总结',
+    reGenerate: '重新生成',
+    msgCount: '条消息',
+    noMessages: '对话记录为空，无法生成总结',
+  },
+  en: {
+    btnLang: '🌐 中文',
+    btnLoadLocal: '📂 Select Local Log Directory / File',
+    agentAll: 'All Agents',
+    sectionProject: 'PROJECTS',
+    sectionTag: 'TAGS',
+    sectionRules: 'MARKING RULES',
+    ruleHint: 'Add rule, classified by AI based on description',
+    btnOverview: '✨ Overview',
+    btnSettings: '⚙︎ API Settings',
+    btnRefresh: '↻ Rescan',
+    btnExportPages: '📦 Export GitHub Pages',
+    searchPlaceholder: 'Search all conversations… (Enter)',
+    sortRecent: 'Recently Updated',
+    sortOldest: 'Oldest Updated',
+    sortStartDesc: 'Start Time ↓',
+    sortMsgDesc: 'Message Count ↓',
+    sortTitle: 'Title A-Z',
+    detailEmptyText: 'Select a conversation from the left sidebar or use full-text search',
+    inSessionSearchPlaceholder: 'Find in this conversation… (Enter next)',
+    clearFilter: 'Clear Filter',
+    sessionsCount: 'sessions',
+    tagPlaceholder: 'Tag Name',
+    save: 'Save',
+    cancel: 'Cancel',
+    ruleNamePlaceholder: 'Rule Name (e.g. Performance Issue)',
+    ruleDescPlaceholder: 'Condition: what kind of message matches',
+    ruleSaveHint: 'Old analysis is invalidated on save; AI will re-classify per new rules on session open',
+    failExec: 'Failed Execution',
+    selfFix: 'Self Correction',
+    conclusionTurn: 'Conclusion Pivot',
+    summaryTitle: 'Progressive Summary',
+    reGenerate: 'Regenerate',
+    msgCount: 'messages',
+    noMessages: 'Empty conversation log, cannot generate summary',
+  }
+};
+
+function t(key) {
+  return (I18N[state.lang] && I18N[state.lang][key]) || (I18N.zh[key] || key);
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -62,10 +142,47 @@ async function loadSessions(refresh) {
   renderList();
 }
 
+function updateLanguageUI() {
+  if ($('#btnLangToggle')) $('#btnLangToggle').textContent = t('btnLang');
+  if ($('#btnLoadLocal')) $('#btnLoadLocal').textContent = t('btnLoadLocal');
+  if ($('#navAllText')) $('#navAllText').textContent = t('agentAll');
+  if ($('#titleProject')) $('#titleProject').textContent = t('sectionProject');
+  if ($('#titleTag')) $('#titleTag').innerHTML = `${t('sectionTag')} <button id="btnAddTag" title="${t('tagPlaceholder')}">＋</button>`;
+  if ($('#titleRules')) $('#titleRules').innerHTML = `${t('sectionRules')} <button id="btnAddRule" title="${t('ruleHint')}">＋</button>`;
+  if ($('#btnOverview')) $('#btnOverview').textContent = t('btnOverview');
+  if ($('#btnSettings')) $('#btnSettings').textContent = t('btnSettings');
+  if ($('#btnRefresh')) $('#btnRefresh').textContent = t('btnRefresh');
+  if ($('#btnExportGitPages')) $('#btnExportGitPages').textContent = t('btnExportPages');
+  if ($('#searchBox')) $('#searchBox').placeholder = t('searchPlaceholder');
+  if ($('#inSessionSearch')) $('#inSessionSearch').placeholder = t('inSessionSearchPlaceholder');
+  if ($('#detailEmpty p')) $('#detailEmpty p').textContent = t('detailEmptyText');
+  if ($('#ruleSaveHint')) $('#ruleSaveHint').textContent = t('ruleSaveHint');
+
+  // Update builtin rule names
+  if (state.flagDefs.fail) state.flagDefs.fail.name = t('failExec');
+  if (state.flagDefs.fix) state.flagDefs.fix.name = t('selfFix');
+  if (state.flagDefs.turn) state.flagDefs.turn.name = t('conclusionTurn');
+
+  // Update sort dropdown options
+  if ($('#sortSel')) {
+    const sel = $('#sortSel');
+    const val = sel.value;
+    sel.innerHTML = `
+      <option value="time-desc">${t('sortRecent')}</option>
+      <option value="time-asc">${t('sortOldest')}</option>
+      <option value="start-desc">${t('sortStartDesc')}</option>
+      <option value="msg-desc">${t('sortMsgDesc')}</option>
+      <option value="title">${t('sortTitle')}</option>
+    `;
+    sel.value = val;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 左栏渲染:Agent / 项目 / 标签
 // ---------------------------------------------------------------------------
 function renderSidebar() {
+  updateLanguageUI();
   // Agent 计数
   const cnt = { '': state.sessions.length, claude: 0, codex: 0, gemini: 0, qoder: 0, opencode: 0, openclaw: 0 };
   for (const s of state.sessions) {
@@ -103,7 +220,7 @@ function renderSidebar() {
     `<div class="tag-item ${state.tagFilter === t.id ? 'active' : ''}" data-tag="${t.id}">
        <span class="swatch" style="background:${esc(t.color)}"></span>${esc(t.name)}
        <button class="del" data-del="${t.id}" title="删除标签">✕</button>
-     </div>`).join('') || '<div class="proj-item" style="cursor:default">暂无标签，点 ＋ 新建</div>';
+     </div>`).join('') || `<div class="proj-item" style="cursor:default">${state.lang === 'en' ? 'No tags yet, click + to add' : '暂无标签，点 ＋ 新建'}</div>`;
   document.querySelectorAll('.tag-item').forEach(el => {
     el.onclick = e => {
       if (e.target.dataset.del) return;
@@ -811,6 +928,17 @@ window.openSession = async function(key) {
     return originalOpenSession(key);
   }
 };
+
+if ($('#btnLangToggle')) {
+  $('#btnLangToggle').onclick = () => {
+    state.lang = state.lang === 'zh' ? 'en' : 'zh';
+    localStorage.setItem('agent_switch_lang', state.lang);
+    renderSidebar();
+    renderRules();
+    renderList();
+    if (state.current) renderDetail();
+  };
+}
 
 // 启动：先取配置（自动总结开关依赖），再加载会话
 if (!window.STATIC_EXPORT_DATA) {
